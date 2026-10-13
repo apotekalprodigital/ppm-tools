@@ -2344,21 +2344,36 @@ function parseGvizNum(raw) {
 
 // Parse gviz CSV text into array of row arrays (handles quoted fields with commas)
 function parseGvizCSV(text) {
+  // Properly handle RFC-4180 CSV: quoted fields may contain embedded newlines and commas.
+  // Split character-by-character across the entire text rather than line-by-line
+  // so that a newline inside a quoted field does NOT start a new row.
   const rows = [];
-  const lines = text.split('\n');
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    const cols = [];
-    let inQ = false, cur = '';
-    for (let c = 0; c < line.length; c++) {
-      const ch = line[c];
-      if (ch === '"') { inQ = !inQ; }
-      else if (ch === ',' && !inQ) { cols.push(cur); cur = ''; }
-      else { cur += ch; }
+  let cols = [], cur = '', inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"') {
+      // Handle escaped quote ("")
+      if (inQ && text[i + 1] === '"') { cur += '"'; i++; }
+      else { inQ = !inQ; }
+    } else if (ch === ',' && !inQ) {
+      cols.push(cur); cur = '';
+    } else if ((ch === '\n' || (ch === '\r' && text[i + 1] === '\n')) && !inQ) {
+      if (ch === '\r') i++; // skip the \n of \r\n
+      cols.push(cur); cur = '';
+      if (cols.some(c => c.trim())) rows.push(cols); // skip fully-blank rows
+      cols = [];
+    } else if (ch === '\r' && !inQ) {
+      // bare \r — treat as line ending
+      cols.push(cur); cur = '';
+      if (cols.some(c => c.trim())) rows.push(cols);
+      cols = [];
+    } else {
+      cur += ch;
     }
-    cols.push(cur);
-    rows.push(cols);
   }
+  // flush last row
+  cols.push(cur);
+  if (cols.some(c => c.trim())) rows.push(cols);
   return rows;
 }
 
@@ -2960,11 +2975,15 @@ async function fetchActiveHC() {
   }
   if (!rows || rows.length < 2) { console.warn('[ActiveHC] empty response'); return; }
 
-  // Count valid rows: non-blank, non-#N/A employee names (skip header row[0])
+  // Count valid rows: non-blank, non-error employee names AND must have a non-blank Employee ID
+  // col[0] = Employee Name, col[1] = Employee ID
   let activeCount = 0;
   for (let r = 1; r < rows.length; r++) {
     const name = (rows[r][0] || '').trim();
-    if (name && name !== '#N/A' && name !== '#REF!') activeCount++;
+    const empId = (rows[r][1] || '').trim();
+    const badName = !name || name === '#N/A' || name === '#REF!' || name === '#VALUE!';
+    const badId   = !empId || empId === '#N/A' || empId === '#REF!';
+    if (!badName && !badId) activeCount++;
   }
   DATA.activeHC = activeCount;
   console.log('[ActiveHC] Active HC count:', activeCount);

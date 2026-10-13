@@ -3,7 +3,158 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow, noarchive, nosnippet">
 <title>PPM Dashboard - Apotek Alpro</title>
+
+<!-- ============================================================
+     ACCESS GATE — runs before anything else renders
+     Direct access  : requires password "Alpro@0106"
+     iFrame bypass  : append ?token=APD_PPM_2026 to the src URL
+                      e.g. src="https://.../ppm-tools/?token=APD_PPM_2026"
+     Session is remembered for 8 hours in sessionStorage.
+     ============================================================ -->
+<script>
+(function () {
+  const CORRECT_PASSWORD = 'Alpro@0106';
+  const BYPASS_TOKEN     = 'APD_PPM_2026';   // secret token for iFrame embed
+  const SESSION_KEY      = 'ppm_auth_ok';
+  const SESSION_HOURS    = 8;
+
+  // 1. Check URL token (iFrame auto-bypass)
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('token') === BYPASS_TOKEN) {
+    sessionStorage.setItem(SESSION_KEY, Date.now() + SESSION_HOURS * 3600000);
+    // Clean token from URL bar (cosmetic, doesn't break function)
+    try {
+      const clean = window.location.pathname + (params.size > 1 ? '?' + [...params.entries()].filter(([k]) => k !== 'token').map(([k,v]) => k+'='+v).join('&') : '');
+      history.replaceState(null, '', clean);
+    } catch(e) {}
+    return; // granted — let page load normally
+  }
+
+  // 2. Check existing session
+  const expiry = parseInt(sessionStorage.getItem(SESSION_KEY) || '0', 10);
+  if (Date.now() < expiry) return; // still valid — let page load normally
+
+  // 3. Block page render and show password gate
+  document.documentElement.style.display = 'none';
+
+  window.addEventListener('DOMContentLoaded', function () {
+    document.documentElement.style.display = '';
+
+    // Inject gate overlay on top of everything
+    const overlay = document.createElement('div');
+    overlay.id = 'ppm-gate';
+    overlay.innerHTML = `
+      <style>
+        #ppm-gate {
+          position: fixed; inset: 0; z-index: 999999;
+          background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 50%, #0f4c75 100%);
+          display: flex; align-items: center; justify-content: center;
+          font-family: 'Segoe UI', system-ui, sans-serif;
+        }
+        #ppm-gate .gate-box {
+          background: white; border-radius: 16px; padding: 40px 36px;
+          width: 100%; max-width: 380px; box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+          text-align: center;
+        }
+        #ppm-gate .gate-logo {
+          font-size: 40px; margin-bottom: 8px;
+        }
+        #ppm-gate .gate-title {
+          font-size: 20px; font-weight: 700; color: #0f172a; margin-bottom: 4px;
+        }
+        #ppm-gate .gate-sub {
+          font-size: 13px; color: #64748b; margin-bottom: 28px;
+        }
+        #ppm-gate .gate-label {
+          display: block; text-align: left; font-size: 12px;
+          font-weight: 600; color: #374151; margin-bottom: 6px;
+        }
+        #ppm-gate .gate-input-wrap {
+          position: relative; margin-bottom: 20px;
+        }
+        #ppm-gate .gate-input {
+          width: 100%; padding: 11px 40px 11px 14px;
+          border: 1.5px solid #d1d5db; border-radius: 8px;
+          font-size: 15px; color: #1e293b; outline: none;
+          box-sizing: border-box; letter-spacing: 2px;
+          transition: border-color 0.2s;
+        }
+        #ppm-gate .gate-input:focus { border-color: #2563eb; }
+        #ppm-gate .gate-input.error { border-color: #dc2626; animation: shake 0.3s; }
+        #ppm-gate .gate-eye {
+          position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+          cursor: pointer; font-size: 16px; user-select: none; color: #64748b;
+        }
+        #ppm-gate .gate-btn {
+          width: 100%; padding: 12px; background: #2563eb; color: white;
+          border: none; border-radius: 8px; font-size: 15px; font-weight: 700;
+          cursor: pointer; transition: background 0.2s;
+        }
+        #ppm-gate .gate-btn:hover { background: #1d4ed8; }
+        #ppm-gate .gate-error {
+          color: #dc2626; font-size: 12px; margin-top: -12px;
+          margin-bottom: 16px; text-align: left; display: none;
+        }
+        #ppm-gate .gate-footer {
+          margin-top: 20px; font-size: 11px; color: #94a3b8;
+        }
+        @keyframes shake {
+          0%,100% { transform: translateX(0); }
+          25% { transform: translateX(-6px); }
+          75% { transform: translateX(6px); }
+        }
+      </style>
+      <div class="gate-box">
+        <div class="gate-logo">🏥</div>
+        <div class="gate-title">PPM Dashboard</div>
+        <div class="gate-sub">Apotek Alpro Group · People Performance Management</div>
+        <label class="gate-label" for="gate-pw">Access Password</label>
+        <div class="gate-input-wrap">
+          <input class="gate-input" type="password" id="gate-pw"
+                 placeholder="Enter password" autocomplete="current-password" />
+          <span class="gate-eye" id="gate-eye" title="Show/hide">👁️</span>
+        </div>
+        <div class="gate-error" id="gate-err">❌ Incorrect password. Please try again.</div>
+        <button class="gate-btn" id="gate-submit">Unlock Dashboard</button>
+        <div class="gate-footer">Access is restricted to authorised Alpro personnel only.</div>
+      </div>
+    `;
+    document.body.prepend(overlay);
+
+    const input  = document.getElementById('gate-pw');
+    const errMsg = document.getElementById('gate-err');
+    const eyeBtn = document.getElementById('gate-eye');
+    const submitBtn = document.getElementById('gate-submit');
+
+    // Show/hide password toggle
+    eyeBtn.addEventListener('click', function () {
+      input.type = input.type === 'password' ? 'text' : 'password';
+      eyeBtn.textContent = input.type === 'password' ? '👁️' : '🙈';
+    });
+
+    function attempt() {
+      const val = input.value;
+      if (val === CORRECT_PASSWORD) {
+        sessionStorage.setItem(SESSION_KEY, Date.now() + SESSION_HOURS * 3600000);
+        overlay.remove();
+      } else {
+        input.classList.add('error');
+        errMsg.style.display = 'block';
+        setTimeout(() => input.classList.remove('error'), 400);
+        input.value = '';
+        input.focus();
+      }
+    }
+
+    submitBtn.addEventListener('click', attempt);
+    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') attempt(); });
+    input.focus();
+  });
+})();
+</script>
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 <style>

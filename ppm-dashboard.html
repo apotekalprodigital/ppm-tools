@@ -517,7 +517,6 @@
     <span class="filter-tag" id="periodLabel">Feb 2026 – Jul 2026</span>
     <div style="font-size:11px;color:#64748b;">
       ⚠️ KPI cards reflect selected period · 12M Turnover Rate always uses rolling 12-month data
-      · <span id="data-staleness-note" style="color:#ca8a04;font-weight:600;"></span>
       · <span id="live-fetch-status" style="font-weight:600;"></span>
     </div>
     <div style="font-size:11px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:4px;">
@@ -5748,15 +5747,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const opts = { day: '2-digit', month: 'short', year: 'numeric' };
   document.getElementById('currentDateBadge').textContent = NOW.toLocaleDateString('id-ID', opts);
 
-  // Data staleness notice: show when calendar has moved past data latest month
-  const staleEl = document.getElementById('data-staleness-note');
-  if (staleEl) {
-    if (IS_PAST_DATA) {
-      staleEl.textContent = `📦 Snapshot: data terakhir ${fmtMonYr(DATA_LATEST_YEAR, DATA_LATEST_MONTH)} · update diperlukan untuk ${ID_MONTHS_SHORT[TODAY_MONTH]} ${TODAY_YEAR}`;
-    } else {
-      staleEl.textContent = '';
-    }
-  }
+  // Staleness notice removed — no stale banner displayed
 
   // Render once immediately with snapshot data
   document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));

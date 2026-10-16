@@ -2803,6 +2803,13 @@ async function fetchMasterDB() {
   if (!rows || rows.length < 2) { console.warn('[MasterDB] empty response'); return; }
 
   // ── 1. Parse all employees ──────────────────────────────────
+  // Cap: never count or extend labels beyond the last FULLY completed month.
+  // On Oct 16 2026 → cap = Sep 2026 (mo0=8). Prevents future-dated entries
+  // (e.g. Nov 2026 resignations already entered in the sheet) from shifting
+  // the period selectors forward.
+  const capYr  = TODAY_MONTH === 0 ? TODAY_YEAR - 1 : TODAY_YEAR;
+  const capMo0 = TODAY_MONTH === 0 ? 11 : TODAY_MONTH - 1;
+
   // Accumulate per-month join/resign counts, and full employee list for HC tracking
   const joinsByYM  = {};   // "YYYY-MM" → count
   const resignByYM = {};   // "YYYY-MM" → count
@@ -2840,29 +2847,37 @@ async function fetchMasterDB() {
 
     employees.push({ joinYr, joinMo0, resignYr, resignMo0, pos, branch });
 
-    // Count join
+    // Count join — only up to last completed month to avoid future-dated entries
     const jk = ymKey(joinYr, joinMo0);
-    joinsByYM[jk] = (joinsByYM[jk] || 0) + 1;
+    const joinIsFuture = (joinYr > capYr) || (joinYr === capYr && joinMo0 > capMo0);
+    if (!joinIsFuture) {
+      joinsByYM[jk] = (joinsByYM[jk] || 0) + 1;
+    }
 
-    // Count resign
+    // Count resign — only up to last completed month
     if (resignYr !== null) {
-      const rk = ymKey(resignYr, resignMo0);
-      resignByYM[rk] = (resignByYM[rk] || 0) + 1;
+      const resignIsFuture = (resignYr > capYr) || (resignYr === capYr && resignMo0 > capMo0);
+      if (!resignIsFuture) {
+        const rk = ymKey(resignYr, resignMo0);
+        resignByYM[rk] = (resignByYM[rk] || 0) + 1;
 
-      // Newbie/oldbie: tenure = months between join and resign
-      const tenureMonths = (resignYr - joinYr) * 12 + (resignMo0 - joinMo0);
-      if (tenureMonths < 6) {
-        newbieResignByYM[rk] = (newbieResignByYM[rk] || 0) + 1;
-      } else {
-        oldbieResignByYM[rk] = (oldbieResignByYM[rk] || 0) + 1;
+        // Newbie/oldbie: tenure = months between join and resign
+        const tenureMonths = (resignYr - joinYr) * 12 + (resignMo0 - joinMo0);
+        if (tenureMonths < 6) {
+          newbieResignByYM[rk] = (newbieResignByYM[rk] || 0) + 1;
+        } else {
+          oldbieResignByYM[rk] = (oldbieResignByYM[rk] || 0) + 1;
+        }
       }
     }
   }
 
   // ── 2. Determine date range ─────────────────────────────────
-  // Find the latest join/resign month in the data
+  // Use capYr/capMo0 defined above — already capped to last completed month.
+  const capKey = ymKey(capYr, capMo0);   // e.g. "2026-09"
+
   const allYMs = [...Object.keys(joinsByYM), ...Object.keys(resignByYM)]
-    .filter(k => /^\d{4}-\d{2}$/.test(k))
+    .filter(k => /^\d{4}-\d{2}$/.test(k) && k <= capKey)  // drop future months
     .sort();
   if (allYMs.length === 0) { console.warn('[MasterDB] no valid dates'); return; }
 
@@ -2870,7 +2885,8 @@ async function fetchMasterDB() {
   const latestYMParsed = parseYearMonth(latestYM);
   if (!latestYMParsed) return;
 
-  // Extend MONTH_FULL_LABELS if live data has months beyond current labels
+  // Extend MONTH_FULL_LABELS if live data has months beyond current labels,
+  // but never beyond the cap (last completed month).
   // MONTH_FULL_LABELS[0]=Feb2026 → labelIdx=0; labelIdx = toLabelIdx(yr,mo0)
   const latestLabelIdx = toLabelIdx(latestYMParsed.year, latestYMParsed.month0);
   if (latestLabelIdx >= MONTH_FULL_LABELS.length) {

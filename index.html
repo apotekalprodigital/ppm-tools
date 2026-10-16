@@ -3099,6 +3099,53 @@ async function fetchMasterDB() {
     DATA.activeHCMonthly[i]  = closingArr[i];  // closing HC = active at month-end
   }
 
+  // ── Recompute newbieActiveMonthly dynamically from employee list ──────────
+  // For each label month i, count employees who:
+  //   - joined IN that month (cohort month)
+  //   - are still employed TODAY (no resign, or resign date > today)
+  // This gives the "currently retained" count per cohort month.
+  // Also recompute activeNewbies/activeOldbies based on rolling 6M tenure from today.
+  const todayDate = new Date(TODAY_YEAR, TODAY_MONTH, TODAY_DAY);
+  let dynActiveNewbies = 0, dynActiveOldbies = 0;
+  // newbieActiveMonthly[i] = retained from cohort month i
+  const dynNewbieActive = new Array(totalMonths).fill(0);
+
+  for (const emp of employees) {
+    const joinDate   = new Date(emp.joinYr, emp.joinMo0, 1);
+    // Is this employee still active today?
+    let stillActive = false;
+    if (emp.resignYr === null) {
+      stillActive = true;
+    } else {
+      const resignDate = new Date(emp.resignYr, emp.resignMo0 + 1, 0); // last day of resign month
+      stillActive = resignDate >= todayDate;
+    }
+    if (!stillActive) continue;
+
+    // Tenure in months from join to today
+    const tenureMonths = (TODAY_YEAR - emp.joinYr) * 12 + (TODAY_MONTH - emp.joinMo0);
+
+    if (tenureMonths < 6) {
+      dynActiveNewbies++;
+    } else {
+      dynActiveOldbies++;
+    }
+
+    // Which label index does their join month map to?
+    const joinLabelIdx = toLabelIdx(emp.joinYr, emp.joinMo0);
+    if (joinLabelIdx >= 0 && joinLabelIdx < totalMonths) {
+      dynNewbieActive[joinLabelIdx]++;
+    }
+  }
+
+  // Write back dynamic values
+  for (let i = 0; i < totalMonths; i++) {
+    DATA.newbieActiveMonthly[i] = dynNewbieActive[i];
+  }
+  DATA.activeNewbies = dynActiveNewbies;
+  DATA.activeOldbies = dynActiveOldbies;
+  console.log('[MasterDB] Dynamic activeNewbies:', dynActiveNewbies, 'activeOldbies:', dynActiveOldbies);
+
   // Update onboarded6M from last 6 months of onboardedMonthly
   DATA.onboarded6M = DATA.onboardedMonthly.slice(Math.max(0, totalMonths - 6)).reduce((a,b)=>(a||0)+(b||0),0);
 
@@ -4215,36 +4262,51 @@ function renderRecruitment() {
   document.getElementById('kpi-hr-interview').closest('.kpi-card').querySelector('.kpi-label').textContent  = `HR Interviewed (${pLabel})`;
   document.getElementById('kpi-offered').closest('.kpi-card').querySelector('.kpi-label').textContent       = `Offering Stage (${pLabel})`;
 
-  // ── Newbie Retention KPIs — 6-month cohort survival rate ─────────────────
-  // Concept: each cohort's retention = % of that month's new hires still employed today.
-  // Period filter selects WHICH cohorts to include, starting from the OLDEST available:
-  //   1M  → 1 oldest cohort (Feb) — ~6 months since joining, most mature window
-  //   3M  → 3 oldest cohorts (Feb, Mar, Apr)
-  //   6M/YTD/12M → all 6 cohorts (Feb–Jul)
-  //   MTD → same as 1M (Feb cohort)
-  // This gives a DECREASING trend as filter widens (older cohorts have more attrition).
-  const TOTAL_COHORTS = DATA.onboardedMonthly.filter(v => v != null).length; // non-null cohorts only
+  // ── Newbie Retention KPIs — rolling 6-month cohort survival rate ──────────
+  // Newbies = employees who joined in the last 6 calendar months from today.
+  // e.g. today = Oct 16 → cohort window = May, Jun, Jul, Agu, Sep, Okt 2026
+  // As month advances (Nov), window slides: Jun, Jul, Agu, Sep, Okt, Nov.
+  // Retention = % of cohort still employed today (computed live from Master DB).
+  // Period filter controls HOW MANY of the 6 cohort months to include:
+  //   MTD / 1M → most recent 1 cohort month only
+  //   3M       → most recent 3 cohort months
+  //   6M / YTD / 12M → all 6 cohort months
+  // Rolling 6-month cohort window anchored to TODAY.
+  // e.g. today = Oct 16 → 6M window = May, Jun, Jul, Agu, Sep, Okt (label indices for those months)
+  // Find label indices for the 6 most recent months up to and including current month (mtdCapMo0).
+  // MONTH_FULL_LABELS[i] → month0 = (i+1)%12, year = 2026+floor((i+1)/12)
+  const totalLabels = MONTH_FULL_LABELS.length;
+  // Build the 6-month rolling window: last 6 label indices available (most recent = current month)
+  const windowSize = 6;
+  const window6Idx = [];
+  for (let i = Math.max(0, totalLabels - windowSize); i < totalLabels; i++) {
+    window6Idx.push(i);
+  }
+  // Period filter controls how many of these 6 cohort months to show:
+  //   MTD / 1M → most recent 1 cohort month (current month only)
+  //   3M       → most recent 3 cohort months
+  //   6M / YTD / 12M → all 6 cohort months
   const nCohorts = (slice.isMTD || slice.shortLabel === '1M') ? 1
                  : (slice.shortLabel === '3M') ? 3
-                 : TOTAL_COHORTS;  // 6M / YTD / 12M → all cohorts
-  // Cohort indices: always take the N OLDEST (lowest indices = most time elapsed)
-  const cohortIdx = Array.from({length: nCohorts}, (_, k) => k);  // [0], [0,1,2], [0..5]
-  const cohortMonths = cohortIdx.map(i => MONTH_SHORT_LABELS[i]);
+                 : windowSize;
+  // Take the N MOST RECENT from the 6M window (tail of the array)
+  const cohortIdx    = window6Idx.slice(-nCohorts);
+  const cohortMonths = cohortIdx.map(i => MONTH_SHORT_LABELS[i] || MONTH_FULL_LABELS[i]);
   const nbRecruited  = cohortIdx.reduce((a, i) => a + (DATA.onboardedMonthly[i] || 0), 0);
   const nbActive     = cohortIdx.reduce((a, i) => a + (DATA.newbieActiveMonthly[i] || 0), 0);
-  const nbRetained   = nbActive;   // retained = still active from that cohort today
-  const nbResigned   = nbRecruited - nbActive;  // left = hired - still active
+  const nbRetained   = nbActive;
+  const nbResigned   = nbRecruited - nbActive;
   const nbRetRate    = nbRecruited > 0 ? (nbRetained / nbRecruited * 100).toFixed(1) : null;
-  // Subtitle: show which cohorts are included
+  // Cohort label: e.g. "Cohort Okt" or "Cohorts Mei–Okt"
   const cohortLabel  = cohortMonths.length === 1
-    ? `Cohort ${cohortMonths[0]} (6M window)`
-    : `Cohorts ${cohortMonths[0]}–${cohortMonths[cohortMonths.length-1]}`;
-  // Company overall turnover rate for comparison (12M rolling)
-  const companyTurnover = ((DATA.resigned12M / DATA.activeHC) * 100).toFixed(1);
+    ? `Cohort ${cohortMonths[0]}`
+    : `Cohorts ${cohortMonths[0]}–${cohortMonths[cohortMonths.length - 1]}`;
+  // Company overall retention rate for comparison
+  const companyTurnover = DATA.activeHC > 0 ? ((DATA.resigned12M / DATA.activeHC) * 100).toFixed(1) : '0';
 
-  // Section header period label
+  // Section header
   const nbSectionEl = document.getElementById('newbie-section-period');
-  if (nbSectionEl) nbSectionEl.textContent = `· ${cohortLabel} · 6M survival rate`;
+  if (nbSectionEl) nbSectionEl.textContent = `· ${cohortLabel} · 6M rolling survival`;
 
   document.getElementById('kpi-nb-recruited-label').textContent = `Recruited (${cohortLabel})`;
   document.getElementById('kpi-nb-recruited').textContent       = nbRecruited.toLocaleString('id');
@@ -4252,29 +4314,28 @@ function renderRecruitment() {
   document.getElementById('kpi-nb-resigned-label').textContent  = `Left within 6M (${cohortLabel})`;
   document.getElementById('kpi-nb-resigned').textContent        = nbResigned.toLocaleString('id');
 
-  // Active newbies — always current snapshot (not period-sliced, since it's live count)
+  // Active newbies = live count from Master DB (tenure < 6M from today)
   document.getElementById('kpi-nb-active').textContent     = DATA.activeNewbies.toLocaleString('id');
   document.getElementById('kpi-nb-active-sub').textContent =
     `${DATA.activeNewbies} currently employed < 6m · ${DATA.activeOldbies} oldbies`;
 
-  // Newbie retention rate — color-coded vs company rate
+  // Newbie retention rate — color-coded vs company retention rate
   const nbRateEl  = document.getElementById('kpi-nb-rate');
   const nbSubEl   = document.getElementById('kpi-nb-rate-sub');
   document.getElementById('kpi-nb-rate-label').textContent = `6M Retention (${cohortLabel})`;
   if (nbRetRate !== null) {
-    const nbNum = parseFloat(nbRetRate);
-    const compNum = parseFloat(companyTurnover);
-    // Retention rate color: green if > (100 - companyTurnover), else red
+    const nbNum       = parseFloat(nbRetRate);
+    const compNum     = parseFloat(companyTurnover);
     const compRetention = 100 - compNum;
-    nbRateEl.textContent  = nbRetRate + '%';
-    nbRateEl.style.color  = nbNum >= compRetention ? '#16a34a' : '#dc2626';
-    nbSubEl.textContent   = `6M survival · vs company ${compRetention.toFixed(1)}% · ${nbNum >= compRetention ? '✅ Above avg' : '⚠️ Below avg'}`;
+    nbRateEl.textContent = nbRetRate + '%';
+    nbRateEl.style.color = nbNum >= compRetention ? '#16a34a' : '#dc2626';
+    nbSubEl.textContent  = `6M survival · vs company ${compRetention.toFixed(1)}% · ${nbNum >= compRetention ? '✅ Above avg' : '⚠️ Below avg'}`;
   } else {
     nbRateEl.textContent = 'N/A'; nbRateEl.style.color = '#9ca3af';
-    nbSubEl.textContent  = 'No recruitment data for this period';
+    nbSubEl.textContent  = 'No data for cohort window';
   }
 
-  // Oldbies — always current snapshot
+  // Oldbies — live count from Master DB (tenure ≥ 6M from today)
   document.getElementById('kpi-nb-oldbies').textContent = DATA.activeOldbies.toLocaleString('id');
 
   // Update chart subtitles dynamically
@@ -5182,11 +5243,14 @@ function renderOverview() {
     exitCount      = exitReasonData.reduce((a,e)=>a+e.count,0);
   }
 
-  // Newbie retention — 6M cohort survival (oldest N cohorts per filter, same as renderRecruitment)
+  // Newbie retention — rolling 6M cohort survival (same window logic as renderRecruitment)
+  const ovTotalLabels = MONTH_FULL_LABELS.length;
+  const ovWindow6Idx  = [];
+  for (let i = Math.max(0, ovTotalLabels - 6); i < ovTotalLabels; i++) ovWindow6Idx.push(i);
   const ovNCohorts  = (slice.isMTD || slice.shortLabel === '1M') ? 1
                     : (slice.shortLabel === '3M') ? 3
-                    : DATA.onboardedMonthly.filter(v => v != null).length; // 6M/YTD/12M → all real cohorts
-  const ovCohortIdx = Array.from({length: ovNCohorts}, (_, k) => k);
+                    : 6;
+  const ovCohortIdx = ovWindow6Idx.slice(-ovNCohorts);
   const nbRecruited = ovCohortIdx.reduce((a, i) => a + (DATA.onboardedMonthly[i] || 0), 0);
   const nbActive2   = ovCohortIdx.reduce((a, i) => a + (DATA.newbieActiveMonthly[i] || 0), 0);
   const nbRetained  = nbActive2;

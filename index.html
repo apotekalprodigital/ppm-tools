@@ -2803,12 +2803,16 @@ async function fetchMasterDB() {
   if (!rows || rows.length < 2) { console.warn('[MasterDB] empty response'); return; }
 
   // ── 1. Parse all employees ──────────────────────────────────
-  // Cap: never count or extend labels beyond the last FULLY completed month.
-  // On Oct 16 2026 → cap = Sep 2026 (mo0=8). Prevents future-dated entries
-  // (e.g. Nov 2026 resignations already entered in the sheet) from shifting
-  // the period selectors forward.
+  // Two caps:
+  // • completedCap = last FULLY completed month (e.g. Sep 2026 when today=Oct 16)
+  //   Used to anchor "Last 1/3/6 Month" periods so they never show partial months.
+  // • mtdCap = current calendar month (Oct 2026)
+  //   Used to allow MTD data for the in-progress month.
+  // Both caps block truly future months (Nov 2026+) from shifting period labels.
   const capYr  = TODAY_MONTH === 0 ? TODAY_YEAR - 1 : TODAY_YEAR;
-  const capMo0 = TODAY_MONTH === 0 ? 11 : TODAY_MONTH - 1;
+  const capMo0 = TODAY_MONTH === 0 ? 11 : TODAY_MONTH - 1;  // last completed month
+  const mtdCapYr  = TODAY_YEAR;   // current month — for MTD
+  const mtdCapMo0 = TODAY_MONTH;  // 0-based
 
   // Accumulate per-month join/resign counts, and full employee list for HC tracking
   const joinsByYM  = {};   // "YYYY-MM" → count
@@ -2847,16 +2851,16 @@ async function fetchMasterDB() {
 
     employees.push({ joinYr, joinMo0, resignYr, resignMo0, pos, branch });
 
-    // Count join — only up to last completed month to avoid future-dated entries
+    // Count join — allow up to current month (MTD), block truly future months
     const jk = ymKey(joinYr, joinMo0);
-    const joinIsFuture = (joinYr > capYr) || (joinYr === capYr && joinMo0 > capMo0);
+    const joinIsFuture = (joinYr > mtdCapYr) || (joinYr === mtdCapYr && joinMo0 > mtdCapMo0);
     if (!joinIsFuture) {
       joinsByYM[jk] = (joinsByYM[jk] || 0) + 1;
     }
 
-    // Count resign — only up to last completed month
+    // Count resign — allow up to current month (MTD), block truly future months
     if (resignYr !== null) {
-      const resignIsFuture = (resignYr > capYr) || (resignYr === capYr && resignMo0 > capMo0);
+      const resignIsFuture = (resignYr > mtdCapYr) || (resignYr === mtdCapYr && resignMo0 > mtdCapMo0);
       if (!resignIsFuture) {
         const rk = ymKey(resignYr, resignMo0);
         resignByYM[rk] = (resignByYM[rk] || 0) + 1;
@@ -2873,20 +2877,24 @@ async function fetchMasterDB() {
   }
 
   // ── 2. Determine date range ─────────────────────────────────
-  // Use capYr/capMo0 defined above — already capped to last completed month.
-  const capKey = ymKey(capYr, capMo0);   // e.g. "2026-09"
+  // Build two sorted YM lists:
+  // • allYMs       = up to current month (Oct) — used to extend labels for MTD
+  // • completedYMs = up to last completed month (Sep) — used to find latestFullIdx
+  const mtdCapKey = ymKey(mtdCapYr, mtdCapMo0);   // e.g. "2026-10"
+  const capKey    = ymKey(capYr, capMo0);          // e.g. "2026-09"
 
   const allYMs = [...Object.keys(joinsByYM), ...Object.keys(resignByYM)]
-    .filter(k => /^\d{4}-\d{2}$/.test(k) && k <= capKey)  // drop future months
+    .filter(k => /^\d{4}-\d{2}$/.test(k) && k <= mtdCapKey)  // allow current month, block Nov+
     .sort();
   if (allYMs.length === 0) { console.warn('[MasterDB] no valid dates'); return; }
 
-  const latestYM = allYMs[allYMs.length - 1];
+  const latestYM = allYMs[allYMs.length - 1];  // up to current month (for MTD label)
   const latestYMParsed = parseYearMonth(latestYM);
   if (!latestYMParsed) return;
 
-  // Extend MONTH_FULL_LABELS if live data has months beyond current labels,
-  // but never beyond the cap (last completed month).
+  // Extend MONTH_FULL_LABELS up to the current month (Oct) so MTD has an index.
+  // getPeriodSlice() will detect Oct as in-progress and use Sep as latestFullIdx
+  // for Last 1/3/6 Month anchoring.
   // MONTH_FULL_LABELS[0]=Feb2026 → labelIdx=0; labelIdx = toLabelIdx(yr,mo0)
   const latestLabelIdx = toLabelIdx(latestYMParsed.year, latestYMParsed.month0);
   if (latestLabelIdx >= MONTH_FULL_LABELS.length) {
@@ -3111,11 +3119,12 @@ async function fetchMasterDB() {
   DATA.resigned6M   = resigned6M;
   DATA.newHires6M   = newHires6M;
 
-  // Update DATA_LATEST from Master DB data
-  const masterLatestLabelIdx = toLabelIdx(latestYMParsed.year, latestYMParsed.month0);
-  if (masterLatestLabelIdx >= 0) {
-    DATA_LATEST_YEAR  = latestYMParsed.year;
-    DATA_LATEST_MONTH = latestYMParsed.month0;
+  // Update DATA_LATEST to last COMPLETED month (capKey), not the current partial month.
+  // This ensures the "data up to" display reflects completed data only.
+  const completedLatestYMParsed = parseYearMonth(capKey);
+  if (completedLatestYMParsed) {
+    DATA_LATEST_YEAR  = completedLatestYMParsed.year;
+    DATA_LATEST_MONTH = completedLatestYMParsed.month0;
   }
 
   console.log('[MasterDB] Updated newHires:', DATA.newHires);
